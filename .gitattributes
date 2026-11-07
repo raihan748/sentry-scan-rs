@@ -1,0 +1,12 @@
+# Auto-detect text files and normalize to LF
+* text=auto eol=lf
+
+# Force source files to LF
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+
+# Windows-specific scripts keep CRLF
+*.bat text eol=crlf
+*.ps1 text eol=crlf
