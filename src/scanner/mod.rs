@@ -1,3 +1,4 @@
+pub mod banner;
 pub mod connect;
 
 use std::net::{IpAddr, SocketAddr};
@@ -6,6 +7,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Semaphore};
 
+use crate::classification::{evaluate_risk, RiskAssessment, ServiceInfo};
+pub use banner::{grab_banner, BannerInfo};
 pub use connect::{probe_tcp_connect, probe_tcp_connect_stream};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -14,6 +17,9 @@ pub struct ScanResult {
     pub port: u16,
     pub is_open: bool,
     pub rtt_ms: f64,
+    pub banner: Option<BannerInfo>,
+    pub service: ServiceInfo,
+    pub risk: RiskAssessment,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +37,7 @@ pub struct ScanReport {
 pub struct ScanConfig {
     pub concurrency: usize,
     pub timeout: Duration,
+    pub grab_banner: bool,
 }
 
 impl Default for ScanConfig {
@@ -38,6 +45,7 @@ impl Default for ScanConfig {
         Self {
             concurrency: 500,
             timeout: Duration::from_millis(1500),
+            grab_banner: false,
         }
     }
 }
@@ -56,6 +64,7 @@ pub async fn run_scan(hosts: &[IpAddr], ports: &[u16], config: ScanConfig) -> Sc
             let sem = Arc::clone(&semaphore);
             let tx = tx.clone();
             let timeout_dur = config.timeout;
+            let do_banner = config.grab_banner;
 
             tokio::spawn(async move {
                 let _permit = match sem.acquire().await {
@@ -67,12 +76,32 @@ pub async fn run_scan(hosts: &[IpAddr], ports: &[u16], config: ScanConfig) -> Sc
                 };
 
                 let addr = SocketAddr::new(host, port);
-                let result = if let Some(rtt) = probe_tcp_connect(addr, timeout_dur).await {
+                let result = if do_banner {
+                    if let Some((mut stream, rtt)) = probe_tcp_connect_stream(addr, timeout_dur).await {
+                        let banner = grab_banner(&mut stream, port, host, timeout_dur).await;
+                        let (service, risk) = evaluate_risk(port, banner.as_ref());
+                        Some(ScanResult {
+                            host,
+                            port,
+                            is_open: true,
+                            rtt_ms: rtt.as_secs_f64() * 1000.0,
+                            banner,
+                            service,
+                            risk,
+                        })
+                    } else {
+                        None
+                    }
+                } else if let Some(rtt) = probe_tcp_connect(addr, timeout_dur).await {
+                    let (service, risk) = evaluate_risk(port, None);
                     Some(ScanResult {
                         host,
                         port,
                         is_open: true,
                         rtt_ms: rtt.as_secs_f64() * 1000.0,
+                        banner: None,
+                        service,
+                        risk,
                     })
                 } else {
                     None
